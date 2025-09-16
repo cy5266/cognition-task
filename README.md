@@ -28,6 +28,19 @@ To run the main application:
 python app.py
 ```
 
+### Running the Web Dashboard
+
+To start the web dashboard with dark mode toggle:
+```bash
+python server.py
+```
+
+Then open your browser and navigate to `http://localhost:8080` to access the dashboard. The dashboard includes:
+- A clean, responsive interface
+- Dark mode toggle in the settings menu (gear icon)
+- Theme preference persistence across sessions
+- Sample dashboard content and statistics
+
 ### Running Tests
 
 To run the test suite:
@@ -51,6 +64,10 @@ pytest -v
 cognition-task/
 ├── README.md          # This file
 ├── app.py            # Main application entry point
+├── server.py         # Web server for dashboard
+├── dashboard.html    # Dashboard web interface
+├── styles.css        # Dashboard styling with dark mode
+├── script.js         # Dashboard JavaScript functionality
 ├── requirements.txt  # Python dependencies
 └── tests/           # Test directory
     └── test_app.py  # Application tests

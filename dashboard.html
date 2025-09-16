@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cognition Task Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="dashboard-container">
+        <header class="dashboard-header">
+            <h1>Cognition Task Dashboard</h1>
+            <div class="header-controls">
+                <button class="settings-btn" id="settingsBtn" aria-label="Settings">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M12 1v6m0 6v6m11-7h-6m-6 0H1m17-4a4 4 0 0 1-8 0 4 4 0 0 1 8 0zM7 21a4 4 0 0 1-8 0 4 4 0 0 1 8 0z"></path>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <div class="settings-menu" id="settingsMenu">
+            <div class="settings-content">
+                <h3>Settings</h3>
+                <div class="setting-item">
+                    <label for="darkModeToggle">Dark Mode</label>
+                    <div class="toggle-switch">
+                        <input type="checkbox" id="darkModeToggle" class="toggle-input">
+                        <span class="toggle-slider"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <main class="dashboard-main">
+            <div class="dashboard-grid">
+                <div class="dashboard-card">
+                    <h2>Welcome</h2>
+                    <p>This is the Cognition Task Dashboard. Use the settings menu to toggle between light and dark themes.</p>
+                </div>
+                
+                <div class="dashboard-card">
+                    <h2>Statistics</h2>
+                    <div class="stat-item">
+                        <span class="stat-label">Tasks Completed:</span>
+                        <span class="stat-value">42</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Success Rate:</span>
+                        <span class="stat-value">95%</span>
+                    </div>
+                </div>
+
+                <div class="dashboard-card">
+                    <h2>Recent Activity</h2>
+                    <ul class="activity-list">
+                        <li>Application started successfully</li>
+                        <li>Setup instructions verified</li>
+                        <li>Dashboard initialized</li>
+                    </ul>
+                </div>
+
+                <div class="dashboard-card">
+                    <h2>System Status</h2>
+                    <div class="status-indicator">
+                        <span class="status-dot status-online"></span>
+                        <span>All systems operational</span>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
