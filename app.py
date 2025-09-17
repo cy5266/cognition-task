@@ -3,7 +3,7 @@
 import os, time, json
 from urllib.parse import urlencode
 from dotenv import load_dotenv
-from flask import Flask, request, redirect, url_for, render_template_string, jsonify
+from flask import Flask, request, redirect, url_for, render_template_string, jsonify, session
 import requests
 
 load_dotenv()
@@ -20,6 +20,13 @@ assert GITHUB_TOKEN and GITHUB_OWNER and GITHUB_REPO and DEVIN_API_KEY, "Missing
 GITHUB_API = "https://api.github.com"
 
 app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "demo-secret-key-for-development")
+
+# In-memory user storage for demo purposes (consistent with SESSION_CACHE pattern)
+USERS = {
+    "admin": {"password": os.getenv("ADMIN_PASSWORD", "password"), "name": "Admin User"},
+    "demo": {"password": os.getenv("DEMO_PASSWORD", "demo"), "name": "Demo User"}
+}
 
 # In-memory cache of session results for demo purposes (OK for local / Loom demo)
 SESSION_CACHE = {}
@@ -104,8 +111,47 @@ def devin_get_session(session_id: str):
         raise RuntimeError(f"Devin get session failed: {r.status_code} {r.text}")
     return r.json()
 
+# ----- Authentication helpers -----
+def validate_login(username, password):
+    """Validate user credentials"""
+    user = USERS.get(username)
+    return user and user["password"] == password
+
+def login_required(f):
+    """Decorator to require login for routes"""
+    from functools import wraps
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in') or not session.get('username'):
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
 # ----- Routes -----
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        
+        if validate_login(username, password):
+            session['logged_in'] = True
+            session['username'] = username
+            session['user_name'] = USERS[username]["name"]
+            return redirect(url_for('home'))
+        else:
+            error = "Invalid username or password"
+            return render_template_string(TPL_LOGIN, error=error)
+    
+    return render_template_string(TPL_LOGIN, error=None)
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
 @app.route("/")
+@login_required
 def home():
     try:
         issues = list_issues()
@@ -114,9 +160,10 @@ def home():
         error = str(e)
         return f"<h1>Error loading issues</h1><pre>{error}</pre>", 500
 
-    return render_template_string(TPL_INDEX, issues=issues, owner=GITHUB_OWNER, repo=GITHUB_REPO)
+    return render_template_string(TPL_INDEX, issues=issues, owner=GITHUB_OWNER, repo=GITHUB_REPO, session=session)
 
 @app.post("/scope/<int:number>")
+@login_required
 def scope_issue(number: int):
     issue = get_issue(number)
     prompt = f"""
@@ -142,6 +189,7 @@ Respond ONLY with valid JSON in the following schema:
 
 
 @app.post("/complete/<int:number>")
+@login_required
 def complete_issue(number: int):
     issue = get_issue(number)
     data = request.get_json(silent=True) or request.form
@@ -177,6 +225,7 @@ Return JSON: {{"branch": "{branch}", "pr_url": "<link>", "notes": "..." }}
 
 
 @app.get("/session")
+@login_required
 def session_status():
     sid = request.args.get("id")
     issue = int(request.args.get("issue", "0"))
@@ -193,6 +242,7 @@ def session_status():
     )
 
 @app.get("/api/devin/status")
+@login_required
 def api_devin_status():
     sid = request.args.get("id")
     if not sid or sid == "None":
@@ -238,7 +288,13 @@ TPL_INDEX = """
   </style>
 </head>
 <body>
-  <h1>Issues — {{ owner }}/{{ repo }}</h1>
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+    <h1>Issues — {{ owner }}/{{ repo }}</h1>
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <span class="muted">Welcome, {{ session.user_name }}</span>
+      <a href="/logout" class="btn">Logout</a>
+    </div>
+  </div>
   <p class="muted">Click <strong>Scope</strong> to have Devin produce a plan + confidence score. Click <strong>Complete</strong> to have Devin implement and open a PR.</p>
 
   {% if issues|length == 0 %}
@@ -400,7 +456,105 @@ TPL_SESSION = """
 </html>
 """
 
+TPL_LOGIN = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Login - Devin × GitHub Issues Dashboard</title>
+  <style>
+    body { 
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; 
+      padding: 24px; 
+      background: #f8f9fa;
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .login-container {
+      background: white;
+      border-radius: 12px;
+      padding: 32px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      width: 100%;
+      max-width: 400px;
+    }
+    h1 { margin: 0 0 24px; text-align: center; }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; margin-bottom: 8px; font-weight: 500; }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      font-size: 16px;
+      box-sizing: border-box;
+      -webkit-appearance: none;
+    }
+    .btn {
+      width: 100%;
+      padding: 12px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .btn:hover { background: #0056b3; }
+    .btn:active { background: #004085; }
+    .error { 
+      color: #dc3545; 
+      background: #f8d7da; 
+      padding: 12px; 
+      border-radius: 8px; 
+      margin-bottom: 16px; 
+    }
+    .demo-info {
+      margin-top: 24px;
+      padding: 16px;
+      background: #e7f3ff;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    @media (max-width: 480px) {
+      body { padding: 16px; }
+      .login-container { padding: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="login-container">
+    <h1>Login</h1>
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/login">
+      <div class="form-group">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" required autocomplete="username" />
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required autocomplete="current-password" />
+      </div>
+      <button type="submit" class="btn">Login</button>
+    </form>
+    <div class="demo-info">
+      <strong>Demo Credentials:</strong><br>
+      Username: admin, Password: password<br>
+      Username: demo, Password: demo
+    </div>
+  </div>
+</body>
+</html>
+"""
+
 if __name__ == "__main__":
     # Run: FLASK_APP=app.py flask run  (or) python app.py
     app.run(host="0.0.0.0", port=5000, debug=True)
-
