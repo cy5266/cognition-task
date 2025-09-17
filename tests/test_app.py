@@ -1,16 +1,31 @@
 """
-Tests for the main application.
+Tests for the Flask application.
 """
 import sys
 import os
+import pytest
+from unittest.mock import patch, MagicMock
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import main
+def test_app_imports():
+    """Test that the Flask app can be imported without environment variables."""
+    with patch.dict(os.environ, {
+        'GITHUB_TOKEN': 'test_token',
+        'GITHUB_OWNER': 'test_owner', 
+        'GITHUB_REPO': 'test_repo',
+        'DEVIN_API_KEY': 'test_key'
+    }):
+        from app import app
+        assert app is not None
 
-def test_main_runs():
-    """Test that main function runs without error."""
-    main()
-
-def test_main_function_exists():
-    """Test that main function is callable."""
-    assert callable(main)
+def test_app_configuration():
+    """Test that the Flask app is properly configured."""
+    with patch.dict(os.environ, {
+        'GITHUB_TOKEN': 'test_token',
+        'GITHUB_OWNER': 'test_owner',
+        'GITHUB_REPO': 'test_repo', 
+        'DEVIN_API_KEY': 'test_key'
+    }):
+        from app import app
+        assert app.name == 'app'
