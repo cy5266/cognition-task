@@ -241,7 +241,6 @@ if view == "home":
 
 # ---------------- Session (Status page) ----------------
 else:
-    # read args
     sid = params.get("id")
     issue_num = params.get("issue")
     s_type = params.get("type", "scope")
@@ -267,7 +266,6 @@ else:
         except Exception as e:
             return {"error": str(e), "raw": None, "parsed": {}}
 
-        # Try to parse your structured output in the SAME way
         try:
             tmp = {}
             if data.get("structured_output"):
@@ -279,7 +277,6 @@ else:
                 elif isinstance(out, dict) and isinstance(out.get("text"), str):
                     tmp.update(json.loads(out["text"]))
         except Exception as e:
-            # swallow parse errors, show raw below
             pass
 
         # cache
@@ -302,8 +299,6 @@ else:
     left, right = st.columns(2)
 
     with left:
-    # Consider the task "completed" if we're in a COMPLETE session
-    # and either (a) parsed has result fields, or (b) status looks finished.
         raw_status = (raw or {}).get("status", "")
         parsed_has_result = isinstance(parsed, dict) and any(
             k in parsed for k in ("pr_url", "branch", "notes")
@@ -351,7 +346,7 @@ else:
                     except Exception as e:
                         st.error(str(e))
 
-        # Parsed JSON block (always show)
+        # Parsed JSON block 
         st.subheader("Parsed JSON")
         if parsed and len(parsed.keys()) > 0:
             st.code(json.dumps(parsed, indent=2), language="json")
@@ -375,12 +370,10 @@ else:
             st.code(json.dumps(raw, indent=2), language="json")
 
 
-    # Optional auto-refresh while status is running
+    # Auto-refresh button
     if raw and isinstance(raw, dict):
         status = raw.get("status", "")
         if status and status not in ["completed", "failed", "errored"]:
-            # light auto-refresh every ~3s up to ~3 minutes
-            # (Streamlit-friendly; won't block interaction)
             count = st.session_state.get("auto_count", 0)
             if count < 60:
                 st.session_state["auto_count"] = count + 1
