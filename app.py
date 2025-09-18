@@ -9,21 +9,24 @@ import streamlit as st
 
 load_dotenv()
 
-# ----- Config -----
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_OWNER = os.getenv("GITHUB_OWNER")
-GITHUB_REPO  = os.getenv("GITHUB_REPO")
-DEVIN_API_KEY = os.getenv("DEVIN_API_KEY")
-DEVIN_BASE = os.getenv("DEVIN_BASE_URL", "https://api.devin.ai/v1")
-
-GITHUB_API = "https://api.github.com"
-
 if "SESSION_CACHE" not in st.session_state:
     st.session_state.SESSION_CACHE = {}
 
 SESSION_CACHE = st.session_state.SESSION_CACHE
 
+def get_secret(key, default=None):
+    if key in st.secrets:
+        return st.secrets[key]
+    return os.getenv(key, default)
 
+# ----- Config -----
+GITHUB_TOKEN = get_secret("GITHUB_TOKEN")
+GITHUB_OWNER = get_secret("GITHUB_OWNER")
+GITHUB_REPO  = get_secret("GITHUB_REPO")
+DEVIN_API_KEY = get_secret("DEVIN_API_KEY")
+DEVIN_BASE    = get_secret("DEVIN_BASE_URL", "https://api.devin.ai/v1")
+
+GITHUB_API = "https://api.github.com"
 
 def needs_config() -> bool:
     missing = []
