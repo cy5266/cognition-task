@@ -24,6 +24,7 @@ if "SESSION_CACHE" not in st.session_state:
 SESSION_CACHE = st.session_state.SESSION_CACHE
 
 
+
 def needs_config() -> bool:
     missing = []
     for k, v in {
@@ -41,10 +42,13 @@ def needs_config() -> bool:
 
 
 def gh_headers():
-    return {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
+    h = {
         "Accept": "application/vnd.github+json",
+        "User-Agent": "streamlit-cognition-demo"
     }
+    if GITHUB_TOKEN:  
+        h["Authorization"] = f"token {GITHUB_TOKEN}"
+    return h
 
 # List out all of the issues from the attached Github repository
 def list_issues():
