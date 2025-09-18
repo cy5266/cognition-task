@@ -41,10 +41,13 @@ def needs_config() -> bool:
 
 
 def gh_headers():
-    return {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
+    h = {
         "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
     }
+    if GITHUB_TOKEN:
+        h["Authorization"] = f"token {GITHUB_TOKEN}"
+    return h
 
 # List out all of the issues from the attached Github repository
 def list_issues():
