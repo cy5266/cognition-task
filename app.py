@@ -188,185 +188,192 @@ Return JSON: {{"branch": "{branch}", "pr_url": "<link>", "notes": "..." }}
 """.strip()
 
 
-# ---------- UI ----------
-st.set_page_config(page_title="Devin × GitHub Issues", layout="wide")
+def main():
+    """Main function for the Streamlit application."""
+    # ---------- UI ----------
+    st.set_page_config(page_title="Devin × GitHub Issues", layout="wide")
 
-st.markdown(
-    "<style>.muted{color:#666}.pill{display:inline-block;background:#eef;padding:4px 10px;border-radius:999px;font-size:12px;margin-right:6px}</style>",
-    unsafe_allow_html=True,
-)
+    st.markdown(
+        "<style>.muted{color:#666}.pill{display:inline-block;background:#eef;padding:4px 10px;border-radius:999px;font-size:12px;margin-right:6px}</style>",
+        unsafe_allow_html=True,
+    )
 
-if needs_config():
-    st.stop()
-
-# Determine "view"
-params = st.query_params.to_dict() if hasattr(st, "query_params") else st.experimental_get_query_params()
-view = params.get("view", ["home"] if isinstance(params.get("view"), list) else "home")
-if isinstance(view, list):  # handle legacy list
-    view = view[0]
-
-# ---------------- Home (Issues list) ----------------
-if view == "home":
-    st.title(f"Issues — {GITHUB_OWNER}/{GITHUB_REPO}")
-    st.caption("Click **Scope** to have Devin produce a plan + confidence score. Use **Complete with this plan** on the session page.")
-    try:
-        issues = list_issues()
-    except Exception as e:
-        st.error(f"Error loading issues:\n\n{e}")
+    if needs_config():
         st.stop()
 
-    if not issues:
-        st.info("No open issues found.")
+    # Determine "view"
+    params = st.query_params.to_dict() if hasattr(st, "query_params") else st.experimental_get_query_params()
+    view = params.get("view", ["home"] if isinstance(params.get("view"), list) else "home")
+    if isinstance(view, list):  # handle legacy list
+        view = view[0]
 
-    for i in issues:
-        with st.container(border=True):
-            left, right = st.columns([8, 1])
-            with left:
-                st.markdown(f"**#{i['number']} — {i['title']}**")
-                st.markdown(f"[{i['html_url']}]({i['html_url']})")
-                if i["labels"]:
-                    st.write("Labels:", " ".join([f"`{l}`" for l in i["labels"]]))
-            with right:
-                if st.button("Scope", key=f"scope-{i['number']}"):
-                    issue = get_issue(i["number"])
-                    prompt = make_scope_prompt(issue)
-                    try:
-                        session = devin_create_session(prompt=prompt)
-                    except Exception as e:
-                        st.error(str(e))
-                        st.stop()
-                    sid = session["id"]
-                    safe_set_query_params(
-                        view="session",
-                        id=sid,
-                        issue=str(i["number"]),
-                        type="scope"
-                    )
+    # ---------------- Home (Issues list) ----------------
+    if view == "home":
+        st.title(f"Issues — {GITHUB_OWNER}/{GITHUB_REPO}")
+        st.caption("Click **Scope** to have Devin produce a plan + confidence score. Use **Complete with this plan** on the session page.")
+        try:
+            issues = list_issues()
+        except Exception as e:
+            st.error(f"Error loading issues:\n\n{e}")
+            st.stop()
+            return  # Exit early if there's an error
+
+        if not issues:
+            st.info("No open issues found.")
+
+        for i in issues:
+            with st.container(border=True):
+                left, right = st.columns([8, 1])
+                with left:
+                    st.markdown(f"**#{i['number']} — {i['title']}**")
+                    st.markdown(f"[{i['html_url']}]({i['html_url']})")
+                    if i["labels"]:
+                        st.write("Labels:", " ".join([f"`{l}`" for l in i["labels"]]))
+                with right:
+                    if st.button("Scope", key=f"scope-{i['number']}"):
+                        issue = get_issue(i["number"])
+                        prompt = make_scope_prompt(issue)
+                        try:
+                            session = devin_create_session(prompt=prompt)
+                        except Exception as e:
+                            st.error(str(e))
+                            st.stop()
+                        sid = session["id"]
+                        safe_set_query_params(
+                            view="session",
+                            id=sid,
+                            issue=str(i["number"]),
+                            type="scope"
+                        )
+                        do_rerun()
+
+    # ---------------- Session (Status page) ----------------
+    else:
+        # read args
+        sid = params.get("id")
+        issue_num = params.get("issue")
+        s_type = params.get("type", "scope")
+        if isinstance(sid, list): sid = sid[0]
+        if isinstance(issue_num, list): issue_num = issue_num[0]
+        if isinstance(s_type, list): s_type = s_type[0]
+
+        st.markdown("[← Back to issues](/)", help="Return to issues list")
+
+        pills = st.columns([4, 4, 4, 2])
+        pills[0].markdown(f"<span class='pill'>Session: {sid}</span>", unsafe_allow_html=True)
+        pills[1].markdown(f"<span class='pill'>Issue: #{issue_num}</span>", unsafe_allow_html=True)
+        pills[2].markdown(f"<span class='pill'>Type: {s_type}</span>", unsafe_allow_html=True)
+        do_refresh = pills[3].button("Refresh")
+
+        # Poll Devin status
+        raw = None
+        parsed = {}
+
+        def fetch_status():
+            try:
+                data = devin_get_session(sid)
+            except Exception as e:
+                return {"error": str(e), "raw": None, "parsed": {}}
+
+            # Try to parse your structured output in the SAME way
+            try:
+                tmp = {}
+                if data.get("structured_output"):
+                    tmp.update(data["structured_output"])
+                else:
+                    out = data.get("output")
+                    if isinstance(out, str):
+                        tmp.update(json.loads(out))
+                    elif isinstance(out, dict) and isinstance(out.get("text"), str):
+                        tmp.update(json.loads(out["text"]))
+            except Exception as e:
+                # swallow parse errors, show raw below
+                pass
+
+            # cache
+            SESSION_CACHE[sid] = {"raw": data, "parsed": tmp}
+            return {"raw": data, "parsed": tmp}
+
+        # Use cache unless refresh clicked
+        cache_hit = SESSION_CACHE.get(sid)
+        if do_refresh or not cache_hit:
+            status_data = fetch_status()
+        else:
+            status_data = cache_hit
+
+        if status_data and "error" in status_data:
+            st.error(status_data["error"])
+        else:
+            raw = status_data.get("raw")
+            parsed = status_data.get("parsed", {})
+
+        left, right = st.columns(2)
+
+        with left:
+            st.subheader("Action Plan and Confidence Score")
+            # Summary
+            if parsed:
+                if "confidence_score" in parsed:
+                    st.write(f"**Confidence Score:** {parsed['confidence_score']}")
+                if isinstance(parsed.get("plan"), list) and parsed["plan"]:
+                    for step in parsed["plan"]:
+                        st.markdown(f"- {step}")
+            else:
+                st.caption("No structured JSON parsed yet — check Raw.")
+
+            # Complete with this plan
+            if isinstance(parsed.get("plan"), list) and parsed["plan"]:
+                with st.form(key="complete_with_plan"):
+                    st.caption("Click to trigger **Complete** using the parsed plan.")
+                    submitted = st.form_submit_button("Complete with this plan")
+                    if submitted:
+                        try:
+                            issue = get_issue(int(issue_num))
+                            action_plan_str = json.dumps(parsed["plan"], indent=2)
+                            prompt = make_complete_prompt(issue, action_plan_str)
+                            session = devin_create_session(prompt=prompt)
+                            new_sid = session["id"]
+                            safe_set_query_params(view="session", id=new_sid, issue=str(issue["number"]), type="complete")
+                            do_rerun()
+                        except Exception as e:
+                            st.error(str(e))
+
+            # Show parsed JSON block
+            st.subheader("Parsed JSON")
+            if parsed and len(parsed.keys()) > 0:
+                st.code(json.dumps(parsed, indent=2), language="json")
+            else:
+                st.caption("No parsed result yet")
+
+            # add the option to close the issue
+            if parsed.get("pr_url") and s_type == "complete":  
+                if st.button(f"Close Issue #{issue_num}", key="close_issue"):  
+                    try:  
+                        close_issue(int(issue_num), f"Completed via PR: {parsed['pr_url']}")  
+                        st.success(f"Issue #{issue_num} has been closed!")  
+                    except Exception as e:  
+                        st.error(f"Failed to close issue: {e}")
+
+        with right:
+            st.subheader("Raw")
+            if raw is None:
+                st.caption("Polling…")
+            else:
+                st.code(json.dumps(raw, indent=2), language="json")
+
+
+        # Optional auto-refresh while status is running
+        if raw and isinstance(raw, dict):
+            status = raw.get("status", "")
+            if status and status not in ["completed", "failed", "errored"]:
+                # light auto-refresh every ~3s up to ~3 minutes
+                # (Streamlit-friendly; won't block interaction)
+                count = st.session_state.get("auto_count", 0)
+                if count < 60:
+                    st.session_state["auto_count"] = count + 1
+                    time.sleep(3)
                     do_rerun()
 
-# ---------------- Session (Status page) ----------------
-else:
-    # read args
-    sid = params.get("id")
-    issue_num = params.get("issue")
-    s_type = params.get("type", "scope")
-    if isinstance(sid, list): sid = sid[0]
-    if isinstance(issue_num, list): issue_num = issue_num[0]
-    if isinstance(s_type, list): s_type = s_type[0]
 
-    st.markdown("[← Back to issues](/)", help="Return to issues list")
-
-    pills = st.columns([4, 4, 4, 2])
-    pills[0].markdown(f"<span class='pill'>Session: {sid}</span>", unsafe_allow_html=True)
-    pills[1].markdown(f"<span class='pill'>Issue: #{issue_num}</span>", unsafe_allow_html=True)
-    pills[2].markdown(f"<span class='pill'>Type: {s_type}</span>", unsafe_allow_html=True)
-    do_refresh = pills[3].button("Refresh")
-
-    # Poll Devin status
-    raw = None
-    parsed = {}
-
-    def fetch_status():
-        try:
-            data = devin_get_session(sid)
-        except Exception as e:
-            return {"error": str(e), "raw": None, "parsed": {}}
-
-        # Try to parse your structured output in the SAME way
-        try:
-            tmp = {}
-            if data.get("structured_output"):
-                tmp.update(data["structured_output"])
-            else:
-                out = data.get("output")
-                if isinstance(out, str):
-                    tmp.update(json.loads(out))
-                elif isinstance(out, dict) and isinstance(out.get("text"), str):
-                    tmp.update(json.loads(out["text"]))
-        except Exception as e:
-            # swallow parse errors, show raw below
-            pass
-
-        # cache
-        SESSION_CACHE[sid] = {"raw": data, "parsed": tmp}
-        return {"raw": data, "parsed": tmp}
-
-    # Use cache unless refresh clicked
-    cache_hit = SESSION_CACHE.get(sid)
-    if do_refresh or not cache_hit:
-        status_data = fetch_status()
-    else:
-        status_data = cache_hit
-
-    if status_data and "error" in status_data:
-        st.error(status_data["error"])
-    else:
-        raw = status_data.get("raw")
-        parsed = status_data.get("parsed", {})
-
-    left, right = st.columns(2)
-
-    with left:
-        st.subheader("Action Plan and Confidence Score")
-        # Summary
-        if parsed:
-            if "confidence_score" in parsed:
-                st.write(f"**Confidence Score:** {parsed['confidence_score']}")
-            if isinstance(parsed.get("plan"), list) and parsed["plan"]:
-                for step in parsed["plan"]:
-                    st.markdown(f"- {step}")
-        else:
-            st.caption("No structured JSON parsed yet — check Raw.")
-
-        # Complete with this plan
-        if isinstance(parsed.get("plan"), list) and parsed["plan"]:
-            with st.form(key="complete_with_plan"):
-                st.caption("Click to trigger **Complete** using the parsed plan.")
-                submitted = st.form_submit_button("Complete with this plan")
-                if submitted:
-                    try:
-                        issue = get_issue(int(issue_num))
-                        action_plan_str = json.dumps(parsed["plan"], indent=2)
-                        prompt = make_complete_prompt(issue, action_plan_str)
-                        session = devin_create_session(prompt=prompt)
-                        new_sid = session["id"]
-                        safe_set_query_params(view="session", id=new_sid, issue=str(issue["number"]), type="complete")
-                        do_rerun()
-                    except Exception as e:
-                        st.error(str(e))
-
-        # Show parsed JSON block
-        st.subheader("Parsed JSON")
-        if parsed and len(parsed.keys()) > 0:
-            st.code(json.dumps(parsed, indent=2), language="json")
-        else:
-            st.caption("No parsed result yet")
-
-        # add the option to close the issue
-        if parsed.get("pr_url") and s_type == "complete":  
-            if st.button(f"Close Issue #{issue_num}", key="close_issue"):  
-                try:  
-                    close_issue(int(issue_num), f"Completed via PR: {parsed['pr_url']}")  
-                    st.success(f"Issue #{issue_num} has been closed!")  
-                except Exception as e:  
-                    st.error(f"Failed to close issue: {e}")
-
-    with right:
-        st.subheader("Raw")
-        if raw is None:
-            st.caption("Polling…")
-        else:
-            st.code(json.dumps(raw, indent=2), language="json")
-
-
-    # Optional auto-refresh while status is running
-    if raw and isinstance(raw, dict):
-        status = raw.get("status", "")
-        if status and status not in ["completed", "failed", "errored"]:
-            # light auto-refresh every ~3s up to ~3 minutes
-            # (Streamlit-friendly; won't block interaction)
-            count = st.session_state.get("auto_count", 0)
-            if count < 60:
-                st.session_state["auto_count"] = count + 1
-                time.sleep(3)
-                do_rerun()
+if __name__ == "__main__":
+    main()
