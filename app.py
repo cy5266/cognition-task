@@ -1,10 +1,11 @@
-
-
-import os, time, json
+# app_streamlit.py
+import os
+import time
+import json
 from urllib.parse import urlencode
 from dotenv import load_dotenv
-from flask import Flask, request, redirect, url_for, render_template_string, jsonify
 import requests
+import streamlit as st
 
 load_dotenv()
 
@@ -15,27 +16,43 @@ GITHUB_REPO  = os.getenv("GITHUB_REPO")
 DEVIN_API_KEY = os.getenv("DEVIN_API_KEY")
 DEVIN_BASE = os.getenv("DEVIN_BASE_URL", "https://api.devin.ai/v1")
 
-assert GITHUB_TOKEN and GITHUB_OWNER and GITHUB_REPO and DEVIN_API_KEY, "Missing .env vars"
-
 GITHUB_API = "https://api.github.com"
 
-app = Flask(__name__)
+# Keep a simple in-memory cache (per Streamlit session)
+if "SESSION_CACHE" not in st.session_state:
+    st.session_state.SESSION_CACHE = {}
 
-# In-memory cache of session results for demo purposes (OK for local / Loom demo)
-SESSION_CACHE = {}
+SESSION_CACHE = st.session_state.SESSION_CACHE
 
-# ----- GitHub helpers -----
+
+# ---------- Helpers ----------
+def needs_config() -> bool:
+    missing = []
+    for k, v in {
+        "GITHUB_TOKEN": GITHUB_TOKEN,
+        "GITHUB_OWNER": GITHUB_OWNER,
+        "GITHUB_REPO": GITHUB_REPO,
+        "DEVIN_API_KEY": DEVIN_API_KEY,
+    }.items():
+        if not v:
+            missing.append(k)
+    if missing:
+        st.error(f"Missing required env vars: {', '.join(missing)}")
+        return True
+    return False
+
+
 def gh_headers():
     return {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
     }
 
+# List out all of the issues from the attached Github repository
 def list_issues():
     url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/issues"
     r = requests.get(url, headers=gh_headers(), params={"state": "open", "per_page": 50})
     r.raise_for_status()
-    # Drop PRs
     issues = [i for i in r.json() if "pull_request" not in i]
     return [{
         "number": i["number"],
@@ -45,6 +62,7 @@ def list_issues():
         "labels": [l["name"] for l in (i.get("labels") or [])],
     } for i in issues]
 
+# Get all of information needed for the issues on Github including taggs, number, url, and more.
 def get_issue(number: int):
     url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/issues/{number}"
     r = requests.get(url, headers=gh_headers())
@@ -58,6 +76,7 @@ def get_issue(number: int):
         "labels": [l["name"] for l in (i.get("labels") or [])],
     }
 
+
 def find_pr_for_branch(branch: str):
     url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/pulls"
     r = requests.get(url, headers=gh_headers(), params={"state": "open", "head": f"{GITHUB_OWNER}:{branch}"})
@@ -65,12 +84,10 @@ def find_pr_for_branch(branch: str):
     prs = r.json()
     return prs[0]["html_url"] if prs else None
 
-# ----- Devin helpers -----
+
 def devin_headers():
-    return {
-        "Authorization": f"Bearer {DEVIN_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    return {"Authorization": f"Bearer {DEVIN_API_KEY}", "Content-Type": "application/json"}
+
 
 def devin_create_session(prompt, extra=None):
     payload = {"prompt": prompt}
@@ -82,8 +99,6 @@ def devin_create_session(prompt, extra=None):
         raise RuntimeError(f"Devin create session failed: {r.status_code} {r.text}")
 
     data = r.json()
-    print("Devin create session response:", data)  # <-- watch your terminal
-
     # Try common id field names
     sid = (
         data.get("id")
@@ -92,9 +107,7 @@ def devin_create_session(prompt, extra=None):
         or (data.get("data", {}) if isinstance(data.get("data"), dict) else {}).get("id")
     )
     if not sid:
-        # Surface payload so we can see the real shape
         raise RuntimeError(f"Devin session missing id in response: {data}")
-
     return {"id": sid, "raw": data}
 
 
@@ -104,22 +117,38 @@ def devin_get_session(session_id: str):
         raise RuntimeError(f"Devin get session failed: {r.status_code} {r.text}")
     return r.json()
 
-# ----- Routes -----
-@app.route("/")
-def home():
+def close_issue(number: int, comment: str = None):  
+    url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/issues/{number}"  
+    payload = {"state": "closed"}  
+    if comment:  
+        # Add a comment before closing  
+        comment_url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/issues/{number}/comments"  
+        requests.post(comment_url, headers=gh_headers(), json={"body": comment})  
+      
+    r = requests.patch(url, headers=gh_headers(), json=payload)  
+    r.raise_for_status()  
+    return r.json()
+
+
+def safe_set_query_params(**kwargs):
+    # Streamlit API changed over time: prefer new API, fall back to experimental
     try:
-        issues = list_issues()
-    except Exception as e:
-        issues = []
-        error = str(e)
-        return f"<h1>Error loading issues</h1><pre>{error}</pre>", 500
+        st.query_params.clear()
+        st.query_params.update(kwargs)
+    except Exception:
+        st.experimental_set_query_params(**kwargs)
 
-    return render_template_string(TPL_INDEX, issues=issues, owner=GITHUB_OWNER, repo=GITHUB_REPO)
 
-@app.post("/scope/<int:number>")
-def scope_issue(number: int):
-    issue = get_issue(number)
-    prompt = f"""
+def do_rerun():
+    try:
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
+
+
+# ---------- Prompts (EXACT copies of your Flask f-strings) ----------
+def make_scope_prompt(issue):
+    return f"""
 You are scoping GitHub issue #{issue['number']} in {GITHUB_OWNER}/{GITHUB_REPO}.
 URL: {issue['html_url']}
 Title: {issue['title']}
@@ -136,23 +165,10 @@ Respond ONLY with valid JSON in the following schema:
 }}
 """.strip()
 
-    session = devin_create_session(prompt=prompt)
-    sid = session["id"]  # will raise if missing
-    return redirect(url_for("session_status", id=sid, issue=number, type="scope"))
 
-
-@app.post("/complete/<int:number>")
-def complete_issue(number: int):
-    issue = get_issue(number)
-    data = request.get_json(silent=True) or request.form
-    action_plan = data.get("action_plan")
-
-    if not action_plan:
-        return ("Missing action_plan. Run Scope first, then click "
-                "'Complete with this plan' from the session page."), 400
-
+def make_complete_prompt(issue, action_plan_str):
     branch = f"devin/issue-{issue['number']}"
-    prompt = f"""
+    return f"""
 Take the following action plan and COMPLETE GitHub issue #{issue['number']} in {GITHUB_OWNER}/{GITHUB_REPO}.
 
 Ticket:
@@ -161,7 +177,7 @@ URL: {issue['html_url']}
 Body: {issue['body'] or '(no description)'}
 
 Action plan (authoritative; follow these steps explicitly):
-{action_plan}
+{action_plan_str}
 
 Execution requirements:
 - Create branch: {branch}
@@ -171,236 +187,186 @@ Execution requirements:
 Return JSON: {{"branch": "{branch}", "pr_url": "<link>", "notes": "..." }}
 """.strip()
 
-    session = devin_create_session(prompt=prompt)
-    sid = session["id"]
-    return redirect(url_for("session_status", id=sid, issue=number, type="complete"))
 
+# ---------- UI ----------
+st.set_page_config(page_title="Devin × GitHub Issues", layout="wide")
 
-@app.get("/session")
-def session_status():
-    sid = request.args.get("id")
-    issue = int(request.args.get("issue", "0"))
-    s_type = request.args.get("type", "scope")
+st.markdown(
+    "<style>.muted{color:#666}.pill{display:inline-block;background:#eef;padding:4px 10px;border-radius:999px;font-size:12px;margin-right:6px}</style>",
+    unsafe_allow_html=True,
+)
 
-    if not sid or sid == "None":
-        return "<h2>Error: Missing or invalid session id</h2>", 400
+if needs_config():
+    st.stop()
 
-    cached = SESSION_CACHE.get(sid)
-    return render_template_string(
-        TPL_SESSION,
-        sid=sid, issue=issue, s_type=s_type,
-        cached=json.dumps(cached or {}, indent=2),
-    )
+# Determine "view"
+params = st.query_params.to_dict() if hasattr(st, "query_params") else st.experimental_get_query_params()
+view = params.get("view", ["home"] if isinstance(params.get("view"), list) else "home")
+if isinstance(view, list):  # handle legacy list
+    view = view[0]
 
-@app.get("/api/devin/status")
-def api_devin_status():
-    sid = request.args.get("id")
-    if not sid or sid == "None":
-        return jsonify({"error": "missing or invalid session id"}), 400
+# ---------------- Home (Issues list) ----------------
+if view == "home":
+    st.title(f"Issues — {GITHUB_OWNER}/{GITHUB_REPO}")
+    st.caption("Click **Scope** to have Devin produce a plan + confidence score. Use **Complete with this plan** on the session page.")
     try:
-        data = devin_get_session(sid)
+        issues = list_issues()
     except Exception as e:
-        return jsonify({"error": str(e)}), 502
+        st.error(f"Error loading issues:\n\n{e}")
+        st.stop()
 
+    if not issues:
+        st.info("No open issues found.")
+
+    for i in issues:
+        with st.container(border=True):
+            left, right = st.columns([8, 1])
+            with left:
+                st.markdown(f"**#{i['number']} — {i['title']}**")
+                st.markdown(f"[{i['html_url']}]({i['html_url']})")
+                if i["labels"]:
+                    st.write("Labels:", " ".join([f"`{l}`" for l in i["labels"]]))
+            with right:
+                if st.button("Scope", key=f"scope-{i['number']}"):
+                    issue = get_issue(i["number"])
+                    prompt = make_scope_prompt(issue)
+                    try:
+                        session = devin_create_session(prompt=prompt)
+                    except Exception as e:
+                        st.error(str(e))
+                        st.stop()
+                    sid = session["id"]
+                    safe_set_query_params(
+                        view="session",
+                        id=sid,
+                        issue=str(i["number"]),
+                        type="scope"
+                    )
+                    do_rerun()
+
+# ---------------- Session (Status page) ----------------
+else:
+    # read args
+    sid = params.get("id")
+    issue_num = params.get("issue")
+    s_type = params.get("type", "scope")
+    if isinstance(sid, list): sid = sid[0]
+    if isinstance(issue_num, list): issue_num = issue_num[0]
+    if isinstance(s_type, list): s_type = s_type[0]
+
+    st.markdown("[← Back to issues](/)", help="Return to issues list")
+
+    pills = st.columns([4, 4, 4, 2])
+    pills[0].markdown(f"<span class='pill'>Session: {sid}</span>", unsafe_allow_html=True)
+    pills[1].markdown(f"<span class='pill'>Issue: #{issue_num}</span>", unsafe_allow_html=True)
+    pills[2].markdown(f"<span class='pill'>Type: {s_type}</span>", unsafe_allow_html=True)
+    do_refresh = pills[3].button("Refresh")
+
+    # Poll Devin status
+    raw = None
     parsed = {}
-    try:
-        if data.get("structured_output"):
-            parsed.update(data["structured_output"])
+
+    def fetch_status():
+        try:
+            data = devin_get_session(sid)
+        except Exception as e:
+            return {"error": str(e), "raw": None, "parsed": {}}
+
+        # Try to parse your structured output in the SAME way
+        try:
+            tmp = {}
+            if data.get("structured_output"):
+                tmp.update(data["structured_output"])
+            else:
+                out = data.get("output")
+                if isinstance(out, str):
+                    tmp.update(json.loads(out))
+                elif isinstance(out, dict) and isinstance(out.get("text"), str):
+                    tmp.update(json.loads(out["text"]))
+        except Exception as e:
+            # swallow parse errors, show raw below
+            pass
+
+        # cache
+        SESSION_CACHE[sid] = {"raw": data, "parsed": tmp}
+        return {"raw": data, "parsed": tmp}
+
+    # Use cache unless refresh clicked
+    cache_hit = SESSION_CACHE.get(sid)
+    if do_refresh or not cache_hit:
+        status_data = fetch_status()
+    else:
+        status_data = cache_hit
+
+    if status_data and "error" in status_data:
+        st.error(status_data["error"])
+    else:
+        raw = status_data.get("raw")
+        parsed = status_data.get("parsed", {})
+
+    left, right = st.columns(2)
+
+    with left:
+        st.subheader("Action Plan and Confidence Score")
+        # Summary
+        if parsed:
+            if "confidence_score" in parsed:
+                st.write(f"**Confidence Score:** {parsed['confidence_score']}")
+            if isinstance(parsed.get("plan"), list) and parsed["plan"]:
+                for step in parsed["plan"]:
+                    st.markdown(f"- {step}")
         else:
-            out = data.get("output")
-            if isinstance(out, str):
-                parsed.update(json.loads(out))
-            elif isinstance(out, dict) and isinstance(out.get("text"), str):
-                parsed.update(json.loads(out["text"]))
-    except Exception as e:
-        print("Parse error:", e)
+            st.caption("No structured JSON parsed yet — check Raw.")
 
-    SESSION_CACHE[sid] = {"raw": data, "parsed": parsed}
-    return jsonify({"raw": data, "parsed": parsed})
+        # Complete with this plan
+        if isinstance(parsed.get("plan"), list) and parsed["plan"]:
+            with st.form(key="complete_with_plan"):
+                st.caption("Click to trigger **Complete** using the parsed plan.")
+                submitted = st.form_submit_button("Complete with this plan")
+                if submitted:
+                    try:
+                        issue = get_issue(int(issue_num))
+                        action_plan_str = json.dumps(parsed["plan"], indent=2)
+                        prompt = make_complete_prompt(issue, action_plan_str)
+                        session = devin_create_session(prompt=prompt)
+                        new_sid = session["id"]
+                        safe_set_query_params(view="session", id=new_sid, issue=str(issue["number"]), type="complete")
+                        do_rerun()
+                    except Exception as e:
+                        st.error(str(e))
 
+        # Show parsed JSON block
+        st.subheader("Parsed JSON")
+        if parsed and len(parsed.keys()) > 0:
+            st.code(json.dumps(parsed, indent=2), language="json")
+        else:
+            st.caption("No parsed result yet")
 
-# ---------- Templates ----------
-TPL_INDEX = """
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Devin × GitHub Issues Dashboard</title>
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; padding: 24px; }
-    h1 { margin: 0 0 8px; }
-    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
-    .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .btn { padding: 8px 12px; border-radius: 8px; border: 1px solid #888; background: #fafafa; cursor: pointer; }
-    .labels span { display:inline-block; background:#f2f2f2; padding:2px 6px; border-radius:6px; margin-right:6px; font-size:12px;}
-    .muted { color: #666; font-size: 12px; }
-    form { display:inline; }
-  </style>
-</head>
-<body>
-  <h1>Issues — {{ owner }}/{{ repo }}</h1>
-  <p class="muted">Click <strong>Scope</strong> to have Devin produce a plan + confidence score. Click <strong>Complete</strong> to have Devin implement and open a PR.</p>
+        # add the option to close the issue
+        if parsed.get("pr_url") and s_type == "complete":  
+            if st.button(f"Close Issue #{issue_num}", key="close_issue"):  
+                try:  
+                    close_issue(int(issue_num), f"Completed via PR: {parsed['pr_url']}")  
+                    st.success(f"Issue #{issue_num} has been closed!")  
+                except Exception as e:  
+                    st.error(f"Failed to close issue: {e}")
 
-  {% if issues|length == 0 %}
-    <p>No open issues found.</p>
-  {% endif %}
-
-  {% for i in issues %}
-    <div class="card">
-      <div class="row">
-        <div>
-          <div><strong>#{{ i.number }}</strong> — {{ i.title }}</div>
-          <div class="muted"><a href="{{ i.html_url }}" target="_blank">{{ i.html_url }}</a></div>
-          {% if i.labels %}
-            <div class="labels">
-              {% for l in i.labels %}<span>{{ l }}</span>{% endfor %}
-            </div>
-          {% endif %}
-        </div>
-        <div>
-          <form method="post" action="/scope/{{ i.number }}"><button class="btn" type="submit">Scope</button></form>
-          <form method="post" action="/complete/{{ i.number }}"><button class="btn" type="submit">Complete</button></form>
-        </div>
-      </div>
-    </div>
-  {% endfor %}
-</body>
-</html>
-"""
-
-TPL_SESSION = """
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Session {{ sid }}</title>
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; padding: 24px; }
-    pre { background:#0b1020; color:#e6edf3; padding:16px; border-radius:12px; overflow:auto; }
-    .pill { display:inline-block; background:#eef; padding:4px 8px; border-radius:999px; font-size:12px; }
-    .row { display:flex; align-items:center; gap:12px; }
-    .btn { padding: 8px 12px; border-radius: 8px; border: 1px solid #888; background: #fafafa; cursor: pointer; }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-    .card { border:1px solid #ddd; border-radius:12px; padding:12px; }
-    .muted { color:#666; font-size:12px; }
-  </style>
-</head>
-<body>
-  <div class="row">
-    <a class="btn" href="/">← Back to issues</a>
-    <div class="pill">Session: {{ sid }}</div>
-    <div class="pill">Issue: #{{ issue }}</div>
-    <div class="pill">Type: {{ s_type }}</div>
-    <button id="refresh" class="btn">Refresh</button>
-  </div>
-
-  <div class="grid" style="margin-top:16px;">
-    <div class="card">
-      <h3>Parsed Output</h3>
-      <div id="summary" class="muted">Waiting for Devin…</div>
-      <div id="complete_form_mount"></div>
-      <pre id="parsed_json">{}</pre>
-    </div>
-    <div class="card">
-      <h3>Raw</h3>
-      <pre id="raw">Polling…</pre>
-    </div>
-  </div>
-
-  <script>
-    const sid = "{{ sid }}";
-    const rawEl = document.getElementById("raw");
-    const parsedEl = document.getElementById("parsed_json");
-    const summaryEl = document.getElementById("summary");
-    const refreshBtn = document.getElementById("refresh");
-
-    function renderParsed(parsed) {
-      // parsed is whatever /api/devin/status extracted (your JSON schema)
-      let html = "";
-      if (typeof parsed.confidence_score !== "undefined") {
-        html += `<p><b>Confidence Score:</b> ${parsed.confidence_score}</p>`;
-      }
-      if (Array.isArray(parsed.plan) && parsed.plan.length) {
-        html += "<b>Plan:</b><ul>" + parsed.plan.map(step => `<li>${step}</li>`).join("") + "</ul>";
-      }
-      if (!html) html = "<span class='muted'>No structured JSON parsed yet — check Raw.</span>";
-      summaryEl.innerHTML = html;
-      parsedEl.textContent = JSON.stringify(parsed, null, 2);
-      renderCompleteButtonIfPlan(parsed);
-    }
-
-    function renderCompleteButtonIfPlan(parsed) {
-        const mount = document.getElementById("complete_form_mount");
-        mount.innerHTML = ""; // reset
-        if (Array.isArray(parsed.plan) && parsed.plan.length) {
-            const form = document.createElement("form");
-            form.method = "post";
-            form.action = `/complete/${encodeURIComponent({{ issue }})}`;
-
-            const ta = document.createElement("textarea");
-            ta.name = "action_plan";
-            ta.style.display = "none";
-            ta.value = JSON.stringify(parsed.plan, null, 2); // send the plan
-            form.appendChild(ta);
-
-            const btn = document.createElement("button");
-            btn.className = "btn";
-            btn.type = "submit";
-            btn.textContent = "Complete with this plan";
-            form.appendChild(btn);
-
-            mount.appendChild(form);
-        }
-    }
+    with right:
+        st.subheader("Raw")
+        if raw is None:
+            st.caption("Polling…")
+        else:
+            st.code(json.dumps(raw, indent=2), language="json")
 
 
-    async function pollOnce() {
-      try {
-        const res = await fetch(`/api/devin/status?id=${encodeURIComponent(sid)}`);
-        const data = await res.json();
-        if (data.error) {
-          rawEl.textContent = "Error: " + data.error;
-          return {done: true};
-        }
-        rawEl.textContent = JSON.stringify(data.raw, null, 2);
-
-        // Render parsed (if any)
-        if (data.parsed) renderParsed(data.parsed);
-
-        // Stop polling on terminal statuses
-        const status = (data.raw && data.raw.status) || "";
-        if (["completed","failed","errored"].includes(status)) {
-          return {done: true};
-        }
-        return {done: false};
-      } catch (e) {
-        rawEl.textContent = "Error: " + e.toString();
-        return {done: true};
-      }
-    }
-
-    async function startPolling() {
-      // initial fetch
-      let r = await pollOnce();
-      if (r.done) return;
-
-      // poll every 3s up to ~3 minutes
-      let count = 0;
-      const timer = setInterval(async () => {
-        count++;
-        const res = await pollOnce();
-        if (res.done || count > 60) clearInterval(timer);
-      }, 3000);
-    }
-
-    refreshBtn.onclick = () => { pollOnce(); };
-    startPolling();
-  </script>
-</body>
-</html>
-"""
-
-if __name__ == "__main__":
-    # Run: FLASK_APP=app.py flask run  (or) python app.py
-    app.run(host="0.0.0.0", port=5000, debug=True)
-
+    # Optional auto-refresh while status is running
+    if raw and isinstance(raw, dict):
+        status = raw.get("status", "")
+        if status and status not in ["completed", "failed", "errored"]:
+            # light auto-refresh every ~3s up to ~3 minutes
+            # (Streamlit-friendly; won't block interaction)
+            count = st.session_state.get("auto_count", 0)
+            if count < 60:
+                st.session_state["auto_count"] = count + 1
+                time.sleep(3)
+                do_rerun()
