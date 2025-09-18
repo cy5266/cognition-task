@@ -18,14 +18,12 @@ DEVIN_BASE = os.getenv("DEVIN_BASE_URL", "https://api.devin.ai/v1")
 
 GITHUB_API = "https://api.github.com"
 
-# Keep a simple in-memory cache (per Streamlit session)
 if "SESSION_CACHE" not in st.session_state:
     st.session_state.SESSION_CACHE = {}
 
 SESSION_CACHE = st.session_state.SESSION_CACHE
 
 
-# ---------- Helpers ----------
 def needs_config() -> bool:
     missing = []
     for k, v in {
@@ -131,7 +129,6 @@ def close_issue(number: int, comment: str = None):
 
 
 def safe_set_query_params(**kwargs):
-    # Streamlit API changed over time: prefer new API, fall back to experimental
     try:
         st.query_params.clear()
         st.query_params.update(kwargs)
@@ -146,7 +143,7 @@ def do_rerun():
         st.experimental_rerun()
 
 
-# ---------- Prompts (EXACT copies of your Flask f-strings) ----------
+# ---------- Prompts ----------
 def make_scope_prompt(issue):
     return f"""
 You are scoping GitHub issue #{issue['number']} in {GITHUB_OWNER}/{GITHUB_REPO}.
@@ -160,8 +157,7 @@ Respond ONLY with valid JSON in the following schema:
   "plan": [string],
   "effort_hours": number,
   "confidence_score": number,  // float between 0 and 1
-  "risks": [string],
-  "test_plan": [string]
+  "risks": [string]
 }}
 """.strip()
 
@@ -199,10 +195,9 @@ st.markdown(
 if needs_config():
     st.stop()
 
-# Determine "view"
 params = st.query_params.to_dict() if hasattr(st, "query_params") else st.experimental_get_query_params()
 view = params.get("view", ["home"] if isinstance(params.get("view"), list) else "home")
-if isinstance(view, list):  # handle legacy list
+if isinstance(view, list): 
     view = view[0]
 
 # ---------------- Home (Issues list) ----------------
@@ -307,19 +302,40 @@ else:
     left, right = st.columns(2)
 
     with left:
-        st.subheader("Action Plan and Confidence Score")
-        # Summary
-        if parsed:
-            if "confidence_score" in parsed:
-                st.write(f"**Confidence Score:** {parsed['confidence_score']}")
-            if isinstance(parsed.get("plan"), list) and parsed["plan"]:
-                for step in parsed["plan"]:
-                    st.markdown(f"- {step}")
-        else:
-            st.caption("No structured JSON parsed yet — check Raw.")
+    # Consider the task "completed" if we're in a COMPLETE session
+    # and either (a) parsed has result fields, or (b) status looks finished.
+        raw_status = (raw or {}).get("status", "")
+        parsed_has_result = isinstance(parsed, dict) and any(
+            k in parsed for k in ("pr_url", "branch", "notes")
+        )
+        status_looks_done = raw_status in {"completed", "success", "succeeded", "done", "finished"}
 
-        # Complete with this plan
-        if isinstance(parsed.get("plan"), list) and parsed["plan"]:
+        completed = (s_type == "complete") and (parsed_has_result or status_looks_done)
+
+        # Header
+        if completed:
+            try:
+                _issue = get_issue(int(issue_num))
+                _title = _issue["title"]
+                st.success(f"Ticket Completed — #{issue_num} · {_title}")
+            except Exception:
+                st.success("Ticket Completed")
+        else:
+            st.subheader("Action Plan and Confidence Score")
+
+        # Summary (only helpful before completion)
+        if not completed:
+            if parsed:
+                if "confidence_score" in parsed:
+                    st.write(f"**Confidence Score:** {parsed['confidence_score']}")
+                if isinstance(parsed.get("plan"), list) and parsed["plan"]:
+                    for step in parsed["plan"]:
+                        st.markdown(f"- {step}")
+            else:
+                st.caption("No structured JSON parsed yet — check Raw.")
+
+        # Complete with this plan (hide once completed)
+        if (not completed) and isinstance(parsed.get("plan"), list) and parsed["plan"]:
             with st.form(key="complete_with_plan"):
                 st.caption("Click to trigger **Complete** using the parsed plan.")
                 submitted = st.form_submit_button("Complete with this plan")
@@ -335,20 +351,20 @@ else:
                     except Exception as e:
                         st.error(str(e))
 
-        # Show parsed JSON block
+        # Parsed JSON block (always show)
         st.subheader("Parsed JSON")
         if parsed and len(parsed.keys()) > 0:
             st.code(json.dumps(parsed, indent=2), language="json")
         else:
             st.caption("No parsed result yet")
 
-        # add the option to close the issue
-        if parsed.get("pr_url") and s_type == "complete":  
-            if st.button(f"Close Issue #{issue_num}", key="close_issue"):  
-                try:  
-                    close_issue(int(issue_num), f"Completed via PR: {parsed['pr_url']}")  
-                    st.success(f"Issue #{issue_num} has been closed!")  
-                except Exception as e:  
+        # Close issue button (still only when we have a PR and we're on 'complete')
+        if parsed.get("pr_url") and s_type == "complete":
+            if st.button(f"Close Issue #{issue_num}", key="close_issue"):
+                try:
+                    close_issue(int(issue_num), f"Completed via PR: {parsed['pr_url']}")
+                    st.success(f"Issue #{issue_num} has been closed!")
+                except Exception as e:
                     st.error(f"Failed to close issue: {e}")
 
     with right:
