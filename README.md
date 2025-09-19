@@ -1,4 +1,4 @@
-Cognition Task — GitHub Issues + Devin Integration
+GitHub Issues + Devin Integration
 
 This project provides a Streamlit dashboard that connects your GitHub repository issues with Devin AI sessions.
 
