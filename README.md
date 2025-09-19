@@ -5,7 +5,7 @@ This project provides a Streamlit dashboard that connects your GitHub repository
 You can:
 - View open issues from a GitHub repository
 - Trigger a Scope session to generate a confidence score and structured action plan
-- Trigger a Complete session to automatically execute the plan and (optionally) close out the issue
+- Trigger a Complete session to automatically execute the plan and (optionally) close out the issue. When executing the plan, the Devin bot will create a PR based on the action plan and the link to the PR will be provided on the dashboard.
 
 Installation
 
