@@ -27,3 +27,12 @@ Launching the app:
 - streamlit run app.py
 
 This will start a local dev server (default: http://localhost:8501)
+
+Running Tests:
+- pytest
+
+Or alternatively:
+- python -m pytest
+
+To run tests with verbose output:
+- pytest -v
